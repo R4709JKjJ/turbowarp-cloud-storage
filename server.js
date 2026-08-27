@@ -1,11 +1,8 @@
 const fs = require("fs");
 const WebSocket = require("ws");
 
-// Porta gestita da Render
 const PORT = process.env.PORT || 10000;
-
-// Percorso persistente su Render
-const DB_FILE = "/var/data/database.json";
+const DB_FILE = "database.json";
 
 // Carica database
 let db = {};
@@ -20,29 +17,23 @@ function saveDB() {
   fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
 }
 
-// Decodifica numero → stringa (HEX → UTF8)
-function decodeNumber(num) {
+// Codifica stringa → numero
+function encode(str) {
+  return parseInt(Buffer.from(str, "utf8").toString("hex"), 16);
+}
+
+// Decodifica numero → stringa
+function decode(num) {
   try {
-    // num deve essere un numero, non undefined
-    if (typeof num !== "number" || isNaN(num)) return "";
-
-    // Converti numero → HEX
     const hex = num.toString(16);
-
-    // Converti HEX → UTF8
     return Buffer.from(hex, "hex").toString("utf8");
   } catch {
     return "";
   }
 }
 
-// Codifica stringa → HEX
-function encodeString(str) {
-  return Buffer.from(str, "utf8").toString("hex");
-}
-
 const wss = new WebSocket.Server({ port: PORT });
-console.log("Cloud server online sulla porta " + PORT);
+console.log("Server online sulla porta " + PORT);
 
 wss.on("connection", ws => {
   ws.on("message", raw => {
@@ -52,37 +43,22 @@ wss.on("connection", ws => {
     const name = msg.name;
     const value = msg.value;
 
-    // Ignora messaggi vuoti o non validi
-    if (!name || value === undefined || value === null) {
-      console.log("Ignorato messaggio vuoto");
+    if (!name || typeof value !== "number") {
+      console.log("Ignorato messaggio non valido");
       return;
     }
 
-    // Decodifica valore
-    const decoded = decodeNumber(value);
-
-    // Salva nel database
+    const decoded = decode(value);
     db[name] = decoded;
     saveDB();
 
     console.log("Salvato:", name, "=", decoded);
 
-    // Codifica per risposta
-    const encoded = encodeString(db[name]);
+    const encoded = encode(db[name]);
 
-    // TurboWarp accetta SOLO numeri → HEX → numero
-    const numericValue = parseInt(encoded, 16);
-
-    const response = JSON.stringify({
+    ws.send(JSON.stringify({
       name,
-      value: numericValue
-    });
-
-    // Invia a tutti i client
-    wss.clients.forEach(client => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(response);
-      }
-    });
+      value: encoded
+    }));
   });
 });
