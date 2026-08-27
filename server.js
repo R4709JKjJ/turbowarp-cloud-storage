@@ -43,18 +43,22 @@ wss.on("connection", ws => {
     const name = msg.name;
     const value = msg.value;
 
-    if (!name || typeof value !== "number") {
-      console.log("Ignorato messaggio non valido");
-      return;
+    // Se TurboWarp invia un valore non numerico → usa il valore salvato
+    let decoded;
+
+    if (typeof value === "number") {
+      decoded = decode(value);
+      db[name] = decoded;
+      saveDB();
+      console.log("Salvato:", name, "=", decoded);
+    } else {
+      // TurboWarp sta chiedendo il valore salvato
+      decoded = db[name] || "";
+      console.log("Letto:", name, "=", decoded);
     }
 
-    const decoded = decode(value);
-    db[name] = decoded;
-    saveDB();
-
-    console.log("Salvato:", name, "=", decoded);
-
-    const encoded = encode(db[name]);
+    // Rispondi SEMPRE con un numero
+    const encoded = encode(decoded);
 
     ws.send(JSON.stringify({
       name,
