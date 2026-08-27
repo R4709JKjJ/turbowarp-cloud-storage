@@ -42,16 +42,12 @@ function decode(num) {
   }
 }
 
-// Estrae name/value da payload variabili
 function extractNameValue(msg) {
-  // caso oggetto standard
   if (msg && typeof msg === "object" && !Array.isArray(msg)) {
     const possibleName = msg.name || msg.key || msg.variable || msg.k || msg.v;
     const possibleValue = msg.value ?? msg.val ?? msg.v ?? msg.data ?? msg[0];
     if (possibleName) return { name: possibleName, value: possibleValue };
   }
-
-  // caso array di oggetti: prendi il primo elemento utile
   if (Array.isArray(msg) && msg.length > 0) {
     for (const item of msg) {
       if (item && typeof item === "object") {
@@ -61,15 +57,12 @@ function extractNameValue(msg) {
       }
     }
   }
-
-  // caso stringa JSON dentro un campo
   if (msg && typeof msg === "string") {
     try {
       const parsed = JSON.parse(msg);
       return extractNameValue(parsed);
     } catch {}
   }
-
   return { name: null, value: null };
 }
 
@@ -78,23 +71,42 @@ console.log("Server online sulla porta " + PORT);
 
 wss.on("connection", ws => {
   ws.on("message", raw => {
-    console.log("RAW MESSAGE:", raw);
+    // Se raw è Buffer, converti in stringa
+    let text;
+    try {
+      if (Buffer.isBuffer(raw)) {
+        text = raw.toString("utf8");
+      } else if (typeof raw === "string") {
+        text = raw;
+      } else {
+        text = String(raw);
+      }
+    } catch (e) {
+      text = "";
+    }
 
+    // Log leggibile per debug
+    console.log("RAW as string:", text);
+
+    // Prova a parsare la stringa JSON
     let parsed;
-    try { parsed = JSON.parse(raw); } catch { parsed = raw; }
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      // se non è JSON, passa il testo grezzo a extractNameValue che gestisce stringhe JSON annidate
+      parsed = text;
+    }
 
     const { name, value } = extractNameValue(parsed);
     console.log("Estratto:", { name, value });
 
     if (!name) {
-      // Rispondi comunque con un messaggio neutro per evitare che TurboWarp rimanga vuoto
       const fallback = JSON.stringify({ name: "unknown", value: 0 });
       try { ws.send(fallback); } catch (e) { console.error("Errore invio fallback:", e); }
       console.log("Messaggio senza name ricevuto: inviato fallback");
       return;
     }
 
-    // Se value è numero => scrittura; altrimenti è richiesta di lettura
     if (typeof value === "number") {
       const decoded = decode(value);
       db[name] = decoded;
