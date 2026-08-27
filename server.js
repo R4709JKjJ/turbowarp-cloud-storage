@@ -23,7 +23,14 @@ function saveDB() {
 // Decodifica numero → stringa (HEX → UTF8)
 function decodeNumber(num) {
   try {
-    return Buffer.from(num.toString(16), "hex").toString("utf8");
+    // num deve essere un numero, non undefined
+    if (typeof num !== "number" || isNaN(num)) return "";
+
+    // Converti numero → HEX
+    const hex = num.toString(16);
+
+    // Converti HEX → UTF8
+    return Buffer.from(hex, "hex").toString("utf8");
   } catch {
     return "";
   }
@@ -45,8 +52,8 @@ wss.on("connection", ws => {
     const name = msg.name;
     const value = msg.value;
 
-    // Se TurboWarp invia undefined → ignoriamo
-    if (name === undefined || value === undefined) {
+    // Ignora messaggi vuoti o non validi
+    if (!name || value === undefined || value === null) {
       console.log("Ignorato messaggio vuoto");
       return;
     }
