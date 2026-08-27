@@ -4,46 +4,73 @@ const WebSocket = require("ws");
 const PORT = process.env.PORT || 10000;
 const DB_FILE = "database.json";
 
-// Carica database
+// Carica DB in modo sicuro
 let db = {};
-if (fs.existsSync(DB_FILE)) {
-  try {
+try {
+  if (fs.existsSync(DB_FILE)) {
     db = JSON.parse(fs.readFileSync(DB_FILE, "utf8"));
-  } catch (e) {
-    console.error("Errore parsing DB, ricreo file:", e);
+  } else {
+    fs.writeFileSync(DB_FILE, JSON.stringify({}));
     db = {};
-    fs.writeFileSync(DB_FILE, JSON.stringify(db));
   }
-} else {
-  fs.writeFileSync(DB_FILE, JSON.stringify(db));
+} catch (e) {
+  console.error("Errore caricamento DB:", e);
+  db = {};
+  try { fs.writeFileSync(DB_FILE, JSON.stringify({})); } catch {}
 }
 
 function saveDB() {
-  try {
-    fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
-  } catch (e) {
-    console.error("Errore salvataggio DB:", e);
-  }
+  try { fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2)); }
+  catch (e) { console.error("Errore salvataggio DB:", e); }
 }
 
-// Codifica stringa -> numero (ritorna 0 per stringhe vuote)
 function encode(str) {
-  if (!str || str.length === 0) return 0;
+  if (!str) return 0;
   const hex = Buffer.from(String(str), "utf8").toString("hex");
-  const num = parseInt(hex, 16);
-  return Number.isNaN(num) ? 0 : num;
+  const n = parseInt(hex, 16);
+  return Number.isNaN(n) ? 0 : n;
 }
 
-// Decodifica numero -> stringa (gestisce NaN e valori non numerici)
 function decode(num) {
   try {
     if (typeof num !== "number" || Number.isNaN(num)) return "";
     const hex = num.toString(16);
-    if (!hex || hex.length === 0) return "";
+    if (!hex) return "";
     return Buffer.from(hex, "hex").toString("utf8");
   } catch {
     return "";
   }
+}
+
+// Estrae name/value da payload variabili
+function extractNameValue(msg) {
+  // caso oggetto standard
+  if (msg && typeof msg === "object" && !Array.isArray(msg)) {
+    const possibleName = msg.name || msg.key || msg.variable || msg.k || msg.v;
+    const possibleValue = msg.value ?? msg.val ?? msg.v ?? msg.data ?? msg[0];
+    if (possibleName) return { name: possibleName, value: possibleValue };
+  }
+
+  // caso array di oggetti: prendi il primo elemento utile
+  if (Array.isArray(msg) && msg.length > 0) {
+    for (const item of msg) {
+      if (item && typeof item === "object") {
+        const n = item.name || item.key || item.variable || item.k;
+        const v = item.value ?? item.val ?? item.v ?? item.data;
+        if (n) return { name: n, value: v };
+      }
+    }
+  }
+
+  // caso stringa JSON dentro un campo
+  if (msg && typeof msg === "string") {
+    try {
+      const parsed = JSON.parse(msg);
+      return extractNameValue(parsed);
+    } catch {}
+  }
+
+  return { name: null, value: null };
 }
 
 const wss = new WebSocket.Server({ port: PORT });
@@ -51,35 +78,29 @@ console.log("Server online sulla porta " + PORT);
 
 wss.on("connection", ws => {
   ws.on("message", raw => {
-    // Log grezzo per debug
     console.log("RAW MESSAGE:", raw);
 
-    let msg = {};
-    try { msg = JSON.parse(raw); } catch (e) {
-      console.log("Messaggio non JSON, ignorato");
-      return;
-    }
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch { parsed = raw; }
 
-    const name = msg.name;
-    const value = msg.value;
+    const { name, value } = extractNameValue(parsed);
+    console.log("Estratto:", { name, value });
 
-    // Log dettagli per debug
-    console.log("Parsed message:", { name, value });
-
-    // Se manca il name, rispondi con errore leggibile e non crashare
     if (!name) {
-      console.log("Messaggio senza name, ignorato");
+      // Rispondi comunque con un messaggio neutro per evitare che TurboWarp rimanga vuoto
+      const fallback = JSON.stringify({ name: "unknown", value: 0 });
+      try { ws.send(fallback); } catch (e) { console.error("Errore invio fallback:", e); }
+      console.log("Messaggio senza name ricevuto: inviato fallback");
       return;
     }
 
-    // Se value è numero -> TurboWarp sta scrivendo: decodifica e salva
+    // Se value è numero => scrittura; altrimenti è richiesta di lettura
     if (typeof value === "number") {
       const decoded = decode(value);
       db[name] = decoded;
       saveDB();
       console.log("Salvato:", name, "=", decoded);
     } else {
-      // TurboWarp chiede il valore: se non esiste, restituisci stringa vuota
       if (db[name] === undefined) {
         db[name] = "";
         saveDB();
@@ -89,15 +110,9 @@ wss.on("connection", ws => {
       }
     }
 
-    // Rispondi sempre con un numero valido
     const responseNumber = encode(db[name] || "");
     const response = JSON.stringify({ name, value: responseNumber });
 
-    // Invia a chi ha richiesto (o a tutti se preferisci)
-    try {
-      ws.send(response);
-    } catch (e) {
-      console.error("Errore invio risposta:", e);
-    }
+    try { ws.send(response); } catch (e) { console.error("Errore invio risposta:", e); }
   });
 });
