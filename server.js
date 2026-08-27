@@ -3,18 +3,31 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcrypt');
-const cors = require('cors');
-const fetch = require('node-fetch');
+
+// Compatibilità fetch: usa global.fetch su Node 18+, altrimenti prova node-fetch
+let fetchLib = null;
+if (typeof fetch !== 'undefined') {
+  fetchLib = fetch;
+} else {
+  try {
+    // node-fetch v2 compatibile con require
+    fetchLib = require('node-fetch');
+  } catch (e) {
+    console.error('node-fetch non disponibile. Se usi Node <18, installa node-fetch.');
+    fetchLib = null;
+  }
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const USERS_FILE = path.join(__dirname, 'users.json');
 
-// Middleware: parsing JSON/urlencoded
+// Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// CORS (per debug: origin true). In produzione sostituire con il dominio specifico.
+// CORS per debug. In produzione sostituire origin: true con il dominio specifico
+const cors = require('cors');
 app.use(cors({ origin: true, credentials: true }));
 app.options('*', (req, res) => res.sendStatus(204));
 
@@ -22,8 +35,13 @@ app.options('*', (req, res) => res.sendStatus(204));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Ensure users file exists
-if (!fs.existsSync(USERS_FILE)) {
-  fs.writeFileSync(USERS_FILE, JSON.stringify([]));
+try {
+  if (!fs.existsSync(USERS_FILE)) {
+    fs.writeFileSync(USERS_FILE, JSON.stringify([]));
+  }
+} catch (err) {
+  console.error('Errore file system all\'avvio', err);
+  process.exit(1);
 }
 
 function readUsers() {
@@ -31,12 +49,17 @@ function readUsers() {
     const raw = fs.readFileSync(USERS_FILE, 'utf8');
     return JSON.parse(raw || '[]');
   } catch (e) {
+    console.error('Errore lettura users.json', e);
     return [];
   }
 }
 
 function writeUsers(users) {
-  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
+  try {
+    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
+  } catch (e) {
+    console.error('Errore scrittura users.json', e);
+  }
 }
 
 // Health check GET
@@ -51,20 +74,20 @@ app.post('/api/ping', (req, res) => {
 
 // Signup
 app.post('/api/signup', async (req, res) => {
-  const { username, email, password } = req.body || {};
-  if (!username || !email || !password) {
-    return res.status(400).json({ error: 'username, email e password richiesti' });
-  }
-
-  const users = readUsers();
-  if (users.find(u => u.email === email)) {
-    return res.status(409).json({ error: 'Email già registrata' });
-  }
-  if (users.find(u => u.username === username)) {
-    return res.status(409).json({ error: 'Username già in uso' });
-  }
-
   try {
+    const { username, email, password } = req.body || {};
+    if (!username || !email || !password) {
+      return res.status(400).json({ error: 'username, email e password richiesti' });
+    }
+
+    const users = readUsers();
+    if (users.find(u => u.email === email)) {
+      return res.status(409).json({ error: 'Email già registrata' });
+    }
+    if (users.find(u => u.username === username)) {
+      return res.status(409).json({ error: 'Username già in uso' });
+    }
+
     const saltRounds = 10;
     const hash = await bcrypt.hash(password, saltRounds);
     const newUser = {
@@ -85,22 +108,23 @@ app.post('/api/signup', async (req, res) => {
 
 // Login
 app.post('/api/login', async (req, res) => {
-  const { emailOrUsername, password } = req.body || {};
-  if (!emailOrUsername || !password) {
-    return res.status(400).json({ error: 'emailOrUsername e password richiesti' });
-  }
-
-  const users = readUsers();
-  const user = users.find(u => u.email === emailOrUsername || u.username === emailOrUsername);
-  if (!user) {
-    return res.status(401).json({ error: 'Credenziali non valide' });
-  }
-
   try {
+    const { emailOrUsername, password } = req.body || {};
+    if (!emailOrUsername || !password) {
+      return res.status(400).json({ error: 'emailOrUsername e password richiesti' });
+    }
+
+    const users = readUsers();
+    const user = users.find(u => u.email === emailOrUsername || u.username === emailOrUsername);
+    if (!user) {
+      return res.status(401).json({ error: 'Credenziali non valide' });
+    }
+
     const match = await bcrypt.compare(password, user.passwordHash);
     if (!match) {
       return res.status(401).json({ error: 'Credenziali non valide' });
     }
+
     return res.json({ success: true, user: { id: user.id, username: user.username, email: user.email } });
   } catch (err) {
     console.error('Login error', err);
@@ -110,10 +134,13 @@ app.post('/api/login', async (req, res) => {
 
 // Simple proxy (opzionale) per inoltrare richieste a turbowarp-cloud-storage.onrender.com
 app.post('/proxy/*', async (req, res) => {
+  if (!fetchLib) {
+    return res.status(500).json({ error: 'fetch non disponibile sul server' });
+  }
   try {
     const targetPath = req.params[0] || '';
     const targetUrl = `https://turbowarp-cloud-storage.onrender.com/${targetPath}`;
-    const response = await fetch(targetUrl, {
+    const response = await fetchLib(targetUrl, {
       method: req.method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req.body)
@@ -126,11 +153,15 @@ app.post('/proxy/*', async (req, res) => {
   }
 });
 
-// Serve index.html per tutte le altre rotte (SPA fallback)
+// SPA fallback: serve index.html per tutte le altre rotte
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// Avvio server con gestione errori
 app.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
+}).on('error', (err) => {
+  console.error('Errore avvio server', err);
+  process.exit(1);
 });
