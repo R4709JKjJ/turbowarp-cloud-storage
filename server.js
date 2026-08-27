@@ -1,130 +1,101 @@
-const fs = require("fs");
-const WebSocket = require("ws");
+const express = require('express');
+const bodyParser = require('body-parser');
+const fs = require('fs');
+const path = require('path');
+const bcrypt = require('bcrypt');
 
-const PORT = process.env.PORT || 10000;
-const DB_FILE = "database.json";
+const app = express();
+const PORT = process.env.PORT || 3000;
+const USERS_FILE = path.join(__dirname, 'users.json');
 
-// Carica DB in modo sicuro
-let db = {};
-try {
-  if (fs.existsSync(DB_FILE)) {
-    db = JSON.parse(fs.readFileSync(DB_FILE, "utf8"));
-  } else {
-    fs.writeFileSync(DB_FILE, JSON.stringify({}));
-    db = {};
-  }
-} catch (e) {
-  console.error("Errore caricamento DB:", e);
-  db = {};
-  try { fs.writeFileSync(DB_FILE, JSON.stringify({})); } catch {}
+app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.json());
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Ensure users file exists
+if (!fs.existsSync(USERS_FILE)) {
+  fs.writeFileSync(USERS_FILE, JSON.stringify([]));
 }
 
-function saveDB() {
-  try { fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2)); }
-  catch (e) { console.error("Errore salvataggio DB:", e); }
-}
-
-function encode(str) {
-  if (!str) return 0;
-  const hex = Buffer.from(String(str), "utf8").toString("hex");
-  const n = parseInt(hex, 16);
-  return Number.isNaN(n) ? 0 : n;
-}
-
-function decode(num) {
+function readUsers() {
+  const raw = fs.readFileSync(USERS_FILE, 'utf8');
   try {
-    if (typeof num !== "number" || Number.isNaN(num)) return "";
-    const hex = num.toString(16);
-    if (!hex) return "";
-    return Buffer.from(hex, "hex").toString("utf8");
-  } catch {
-    return "";
+    return JSON.parse(raw || '[]');
+  } catch (e) {
+    return [];
   }
 }
 
-function extractNameValue(msg) {
-  if (msg && typeof msg === "object" && !Array.isArray(msg)) {
-    const possibleName = msg.name || msg.key || msg.variable || msg.k || msg.v;
-    const possibleValue = msg.value ?? msg.val ?? msg.v ?? msg.data ?? msg[0];
-    if (possibleName) return { name: possibleName, value: possibleValue };
-  }
-  if (Array.isArray(msg) && msg.length > 0) {
-    for (const item of msg) {
-      if (item && typeof item === "object") {
-        const n = item.name || item.key || item.variable || item.k;
-        const v = item.value ?? item.val ?? item.v ?? item.data;
-        if (n) return { name: n, value: v };
-      }
-    }
-  }
-  if (msg && typeof msg === "string") {
-    try {
-      const parsed = JSON.parse(msg);
-      return extractNameValue(parsed);
-    } catch {}
-  }
-  return { name: null, value: null };
+function writeUsers(users) {
+  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
 }
 
-const wss = new WebSocket.Server({ port: PORT });
-console.log("Server online sulla porta " + PORT);
+// Signup endpoint
+app.post('/api/signup', async (req, res) => {
+  const { username, email, password } = req.body;
+  if (!username || !email || !password) {
+    return res.status(400).json({ error: 'username, email and password required' });
+  }
 
-wss.on("connection", ws => {
-  ws.on("message", raw => {
-    // Se raw è Buffer, converti in stringa
-    let text;
-    try {
-      if (Buffer.isBuffer(raw)) {
-        text = raw.toString("utf8");
-      } else if (typeof raw === "string") {
-        text = raw;
-      } else {
-        text = String(raw);
-      }
-    } catch (e) {
-      text = "";
+  const users = readUsers();
+  if (users.find(u => u.email === email)) {
+    return res.status(409).json({ error: 'Email already registered' });
+  }
+  if (users.find(u => u.username === username)) {
+    return res.status(409).json({ error: 'Username already taken' });
+  }
+
+  try {
+    const saltRounds = 10;
+    const hash = await bcrypt.hash(password, saltRounds);
+    const newUser = {
+      id: Date.now(),
+      username,
+      email,
+      passwordHash: hash,
+      createdAt: new Date().toISOString()
+    };
+    users.push(newUser);
+    writeUsers(users);
+    return res.json({ success: true, message: 'Account created' });
+  } catch (err) {
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Login endpoint
+app.post('/api/login', async (req, res) => {
+  const { emailOrUsername, password } = req.body;
+  if (!emailOrUsername || !password) {
+    return res.status(400).json({ error: 'emailOrUsername and password required' });
+  }
+
+  const users = readUsers();
+  const user = users.find(u => u.email === emailOrUsername || u.username === emailOrUsername);
+  if (!user) {
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+
+  try {
+    const match = await bcrypt.compare(password, user.passwordHash);
+    if (!match) {
+      return res.status(401).json({ error: 'Invalid credentials' });
     }
+    // For demo: return basic user info (never return password hash)
+    return res.json({ success: true, user: { id: user.id, username: user.username, email: user.email } });
+  } catch (err) {
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
 
-    // Log leggibile per debug
-    console.log("RAW as string:", text);
+// Simple health check
+app.get('/api/ping', (req, res) => res.json({ ok: true }));
 
-    // Prova a parsare la stringa JSON
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      // se non è JSON, passa il testo grezzo a extractNameValue che gestisce stringhe JSON annidate
-      parsed = text;
-    }
+// Serve index.html for root
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
-    const { name, value } = extractNameValue(parsed);
-    console.log("Estratto:", { name, value });
-
-    if (!name) {
-      const fallback = JSON.stringify({ name: "unknown", value: 0 });
-      try { ws.send(fallback); } catch (e) { console.error("Errore invio fallback:", e); }
-      console.log("Messaggio senza name ricevuto: inviato fallback");
-      return;
-    }
-
-    if (typeof value === "number") {
-      const decoded = decode(value);
-      db[name] = decoded;
-      saveDB();
-      console.log("Salvato:", name, "=", decoded);
-    } else {
-      if (db[name] === undefined) {
-        db[name] = "";
-        saveDB();
-        console.log("Chiave non trovata, creata vuota:", name);
-      } else {
-        console.log("Letto:", name, "=", db[name]);
-      }
-    }
-
-    const responseNumber = encode(db[name] || "");
-    const response = JSON.stringify({ name, value: responseNumber });
-
-    try { ws.send(response); } catch (e) { console.error("Errore invio risposta:", e); }
-  });
+app.listen(PORT, () => {
+  console.log(`Server listening on port ${PORT}`);
 });
