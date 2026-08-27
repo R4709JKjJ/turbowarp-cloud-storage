@@ -1,10 +1,10 @@
 const fs = require("fs");
 const WebSocket = require("ws");
 
-// Render passa automaticamente la porta via process.env.PORT
+// Porta gestita da Render
 const PORT = process.env.PORT || 10000;
 
-// Percorso sicuro e persistente su Render
+// Percorso persistente su Render
 const DB_FILE = "/var/data/database.json";
 
 // Carica database
@@ -20,7 +20,7 @@ function saveDB() {
   fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
 }
 
-// Decodifica numero → stringa
+// Decodifica numero → stringa (HEX → UTF8)
 function decodeNumber(num) {
   try {
     return Buffer.from(num.toString(16), "hex").toString("utf8");
@@ -34,7 +34,6 @@ function encodeString(str) {
   return Buffer.from(str, "utf8").toString("hex");
 }
 
-// Server WebSocket
 const wss = new WebSocket.Server({ port: PORT });
 console.log("Cloud server online sulla porta " + PORT);
 
@@ -46,7 +45,13 @@ wss.on("connection", ws => {
     const name = msg.name;
     const value = msg.value;
 
-    // Decodifica valore ricevuto da TurboWarp
+    // Se TurboWarp invia undefined → ignoriamo
+    if (name === undefined || value === undefined) {
+      console.log("Ignorato messaggio vuoto");
+      return;
+    }
+
+    // Decodifica valore
     const decoded = decodeNumber(value);
 
     // Salva nel database
@@ -58,7 +63,7 @@ wss.on("connection", ws => {
     // Codifica per risposta
     const encoded = encodeString(db[name]);
 
-    // TurboWarp accetta SOLO numeri → convertiamo HEX in numero
+    // TurboWarp accetta SOLO numeri → HEX → numero
     const numericValue = parseInt(encoded, 16);
 
     const response = JSON.stringify({
