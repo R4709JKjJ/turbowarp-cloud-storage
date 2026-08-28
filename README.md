@@ -26,9 +26,13 @@ persistono nel tempo:
 - passa a un database gestito esterno (in tal caso andrebbe reintrodotta una
   variabile `DATABASE_URL` e il relativo driver — chiedimelo se ti serve).
 
-Allo stesso modo, se non imposti `SESSION_SECRET`, il server ne genera uno
-casuale ad ogni avvio: gli utenti restano disconnessi dopo ogni redeploy.
-Impostalo tra le variabili d'ambiente se vuoi evitarlo (facoltativo).
+## ⚠️ Sessioni non persistenti
+
+L'autenticazione usa un token in memoria (non un cookie, non un database):
+questo permette al frontend di funzionare anche aperto da un dominio diverso
+da quello del server. Come conseguenza, ad ogni redeploy/riavvio del servizio
+tutti i token emessi vengono invalidati e gli utenti devono rifare il login
+(coerente con la natura "demo" dell'app — vedi `server.js` per i dettagli).
 
 ## Struttura del progetto
 
@@ -66,8 +70,6 @@ all'avvio, e serve sia le API (`/api/...`) sia il frontend statico. Apri
    - Build command: `npm install`
    - Start command: `npm start`
 4. Deploy — **non è necessario impostare alcuna variabile d'ambiente.**
-   (Puoi comunque aggiungere `SESSION_SECRET` in seguito, dalla sezione
-   *Environment*, se vuoi che le sessioni non si azzerino ad ogni redeploy.)
 
 ## Sicurezza implementata
 
